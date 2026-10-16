@@ -1,18 +1,18 @@
 # ⚡ Mr. Stark AI
 
-### *My own sarcastic AI assistant, inspired by Iron Man.*
+### *Everyone wanted to build Jarvis. I wanted to build Iron Man.*
 
 > "Sometimes you gotta run before you can walk."
 
 ## 🤍 The idea behind it
 
-Ever since I watched *Iron Man*, I've wanted an AI assistant of my own — someone who's witty, sarcastic, friendly, and actually explains things instead of just throwing answers at me.
+When everyone started building their own Jarvis, I wanted to try something different. Instead of creating an assistant that simply follows commands and gets things done for me, I wanted to build something inspired by **Tony Stark himself** — his wit, curiosity, intelligence, and the way he approaches problems.
 
-As an ECE student, subjects like Network Analysis, circuit theory, and electronics can get overwhelming. Sometimes, I just want someone to break things down, explain the logic, and maybe roast me a little when I mess up. 😭
+As an ECE student, I often find myself wrestling with subjects like Network Analysis, circuit theory, and electronics. I didn't just want an AI that handed me answers. I wanted one that could sit with me through a difficult problem, explain the reasoning, challenge my thinking, and help me actually understand what I was learning.
 
-**So, I decided to build the assistant I needed for myself.**
+That's the idea behind Mr. Stark.
 
-Mr. Stark started as a personal solution to a problem I faced every day: wanting to understand difficult concepts without feeling overwhelmed. It wasn't about building something for everyone else. It was about creating something that could help *me* learn, experiment, and make sense of things — with a little Iron Man-inspired sarcasm along the way.
+Not an assistant that works *for* me, but one that works *with* me — a sarcastic, knowledgeable companion that makes learning more engaging and problem-solving less intimidating.
 
 ## ✨ What I'm building
 
@@ -20,7 +20,7 @@ Mr. Stark started as a personal solution to a problem I faced every day: wanting
 - 🎙️ Voice interaction for more natural conversations.
 - 🧠 Persistent memory and a planned RAG-powered Knowledge Vault.
 - ⚡ A cinematic interface featuring an Arc Reactor and interactive 3D elements.
-- 🔬 An engineering companion for circuits, electronics, programming, and difficult concepts.
+- 🔬 An engineering companion for circuits, electronics, programming, and the concepts that keep me up at night. 😭
 
 ## 🛠️ Tech Stack
 
@@ -28,13 +28,12 @@ Mr. Stark started as a personal solution to a problem I faced every day: wanting
 
 ## 🚧 Current Status
 
-**A work in progress!** I'm still developing Mr. Stark, improving existing functionality, and experimenting with new ideas. Some features are still planned, and there's plenty left to build.
+Mr. Stark is a work in progress. I'm still building, experimenting, fixing bugs, and figuring things out as I go. The vision is big, and there's plenty left to bring to life.
 
-## 👩🏻‍💻 About Me
+## 👩🏻‍💻 Built by
 
-**Shruthy Krishnamoorthy** — ECE student, AI enthusiast, and aspiring builder of things that probably sound a little too ambitious at first.
+**Shruthy K** — ECE student, AI enthusiast, and aspiring builder.
 
-I'm learning by building, breaking things, fixing them, and figuring it out along the way.
+*Inspired by Iron Man. Built to think together, learn together, and solve problems together.* ⚡
 
-*Inspired by Iron Man. Built to solve my own problems. Powered by curiosity, code, and unreasonable ambition.* ⚡
 
