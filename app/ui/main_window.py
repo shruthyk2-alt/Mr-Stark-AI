@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import math
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -11,7 +13,7 @@ from dotenv import load_dotenv
 import google.genai as genai
 from google.genai.errors import APIError
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QTimer, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont, QClipboard
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -41,6 +43,7 @@ except Exception:  # pragma: no cover - optional dependency
     sr = None
 
 from app.personality.voice import StarkVoice
+from app.personality.engine import ToneMode, StarkVault
 
 
 class VoiceCaptureWorker(QObject):
@@ -481,12 +484,14 @@ class StartupSplash(QWidget):
 
 class StarkMainWindow(QMainWindow):
     """
-    MR. STARK Main Window with Redesigned Sophisticated UI.
-    Features left sidebar navigation, central Arc Reactor, right-side panels, and enhanced styling.
+    MR. STARK Main Window — Futuristic Cinematic AI Command Centre.
+    Unified workspace featuring interactive chat cards, dynamic sarcastic personality,
+    live tone switching, prominent Arc Reactor, and continuous voice interaction.
     """
+
     def __init__(self) -> None:
         super().__init__()
-        
+
         # Initialize backend systems
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         load_dotenv(os.path.join(project_root, ".env"))
@@ -497,9 +502,14 @@ class StarkMainWindow(QMainWindow):
         else:
             self.gemini_client = None
             self.chat_session = None
-        
+
+        # Personality & Vault
+        self.vault = StarkVault()
+        self.stark_voice = StarkVoice(mode="focused", user_name="Shruthy")
+        self.last_assistant_response = ""
         self.conversation_history = []
-        self.stark_voice = StarkVoice(mode="focused")
+
+        # Voice Pipeline States
         self.voice_state = "idle"
         self.voice_enabled = False
         self.voice_engine = None
@@ -518,13 +528,14 @@ class StarkMainWindow(QMainWindow):
         self.inactivity_timer.timeout.connect(self._on_inactivity_timeout)
         self.gemini_request_in_flight = False
         self._max_history_messages = 8
-        self.ui_mode = "voice"
+        self.ui_mode = "unified"
+
         self._init_voice_system()
 
         # Window setup
-        self.setWindowTitle("MR. STARK — ONLINE")
-        self.resize(1400, 900)
-        self.setMinimumSize(1200, 700)
+        self.setWindowTitle("MR. STARK // CINEMATIC COMMAND CENTRE")
+        self.resize(1440, 920)
+        self.setMinimumSize(1240, 750)
 
         # Apply global stylesheet
         self._apply_stylesheet()
@@ -532,440 +543,728 @@ class StarkMainWindow(QMainWindow):
         # Build UI
         self._build_ui()
 
-        self.set_mode("voice")
+        # Generate and display initial dynamic greeting
+        QTimer.singleShot(400, self.generate_startup_greeting)
 
     def _apply_stylesheet(self) -> None:
-        """Apply global stylesheet for the application."""
+        """Apply cinematic futuristic stylesheet."""
         stylesheet = """
         QMainWindow {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
-                stop:0 #050d15, stop:0.45 #0a1723, stop:1 #050b12);
+                stop:0 #040911, stop:0.4 #081422, stop:1 #040810);
         }
         QWidget {
             color: #EAF7FF;
             background: transparent;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
         }
         QTextEdit, QLineEdit {
-            background: rgba(13, 23, 33, 0.85);
+            background: rgba(7, 18, 30, 0.9);
             color: #EAF7FF;
-            border: 1px solid rgba(124, 213, 255, 0.2);
+            border: 1px solid rgba(116, 214, 255, 0.25);
             border-radius: 8px;
-            padding: 8px;
-            selection-background-color: rgba(124, 213, 255, 0.4);
+            padding: 10px;
+            selection-background-color: rgba(116, 214, 255, 0.35);
+        }
+        QLineEdit:focus {
+            border: 1px solid #74d6ff;
+            background: rgba(10, 24, 40, 0.95);
         }
         QPushButton {
             color: #EAF7FF;
             border-radius: 8px;
             padding: 8px 16px;
-            font-weight: 700;
-            border: 1px solid rgba(124, 213, 255, 0.3);
+            font-weight: 600;
+            border: 1px solid rgba(116, 214, 255, 0.28);
+            background: rgba(116, 214, 255, 0.08);
         }
         QPushButton:hover {
-            background: rgba(124, 213, 255, 0.15);
+            background: rgba(116, 214, 255, 0.2);
+            border: 1px solid #74d6ff;
         }
         QPushButton:pressed {
-            background: rgba(124, 213, 255, 0.25);
+            background: rgba(116, 214, 255, 0.3);
+        }
+        QScrollBar:vertical {
+            border: none;
+            background: rgba(5, 12, 20, 0.6);
+            width: 8px;
+            border-radius: 4px;
+            margin: 0px;
+        }
+        QScrollBar::handle:vertical {
+            background: rgba(116, 214, 255, 0.35);
+            min-height: 24px;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #74d6ff;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
         }
         """
         self.setStyleSheet(stylesheet)
 
     def _build_ui(self) -> None:
-        """Build the complete UI with sidebar, main content, and right panels."""
+        """Build the complete 3-panel command centre."""
         central = QWidget()
         self.setCentralWidget(central)
-        
+
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ========== LEFT SIDEBAR ==========
+        # 1. LEFT SIDEBAR: Navigation & Active Projects
         sidebar = self._build_sidebar()
         main_layout.addWidget(sidebar, 0)
 
-        # ========== CENTER CONTENT ==========
+        # 2. CENTER CONTENT: Unified Chat Workspace
         center_container = QWidget()
         center_layout = QVBoxLayout(center_container)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(0)
 
-        # Top header with status
         header = self._build_header()
         center_layout.addWidget(header, 0)
 
-        # Main content area
-        self.content_area = QStackedWidget()
-        self.voice_page = self._build_voice_mode()
-        self.text_page = self._build_text_mode()
-        self.content_area.addWidget(self.voice_page)
-        self.content_area.addWidget(self.text_page)
-        self.content_area.setCurrentWidget(self.voice_page)
-        center_layout.addWidget(self.content_area, 1)
-
-        # Bottom control bar
-        control_bar = self._build_control_bar()
-        center_layout.addWidget(control_bar, 0)
+        unified_workspace = self._build_center_workspace()
+        center_layout.addWidget(unified_workspace, 1)
 
         main_layout.addWidget(center_container, 1)
 
-        # ========== RIGHT SIDEBAR ==========
+        # 3. RIGHT PANEL: Holographic Intelligence & Arc Reactor
         right_panel = self._build_right_panel()
         main_layout.addWidget(right_panel, 0)
 
     def _build_sidebar(self) -> QFrame:
-        """Build the left navigation sidebar."""
+        """Build the left navigation & projects sidebar."""
         sidebar = QFrame()
         sidebar.setStyleSheet(
-            "QFrame { background: rgba(7, 17, 32, 0.95); border-right: 1px solid rgba(116, 214, 255, 0.15); }"
+            "QFrame { background: rgba(5, 13, 23, 0.96); border-right: 1px solid rgba(116, 214, 255, 0.18); }"
         )
-        sidebar.setFixedWidth(180)
+        sidebar.setFixedWidth(200)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(12, 16, 12, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 18, 14, 18)
+        layout.setSpacing(10)
 
-        # STARK branding
-        brand = QLabel("⬤ STARK")
-        brand.setStyleSheet("font: 700 14px 'Segoe UI'; color: #74d6ff; letter-spacing: 2px;")
+        # Brand header
+        brand = QLabel("◈ STARK // AI")
+        brand.setStyleSheet("font: 800 15px 'Segoe UI'; color: #74d6ff; letter-spacing: 2px;")
         layout.addWidget(brand)
 
-        layout.addSpacing(16)
+        subtitle = QLabel("Command Node v2.0")
+        subtitle.setStyleSheet("color: rgba(184, 217, 255, 0.5); font: 500 10px 'Segoe UI'; margin-bottom: 8px;")
+        layout.addWidget(subtitle)
 
         # Navigation items
         nav_items = [
-            ("Home", self._on_nav_home),
-            ("Chat", lambda: self.set_mode("text")),
-            ("Projects", self._on_nav_projects),
-            ("Tools", self._on_nav_tools),
-            ("Memory", self._on_nav_memory),
-            ("Settings", self._on_nav_settings),
+            ("⚡ Command Deck", lambda: self.command_input.setFocus() if hasattr(self, "command_input") else None),
+            ("📁 Project Vault", self._on_nav_projects),
+            ("🛠 Engineering Tools", self._on_nav_tools),
+            ("🧠 Memory Index", self._on_nav_memory),
+            ("⚙ System Settings", self._on_nav_settings),
         ]
 
         for label, callback in nav_items:
             btn = QPushButton(label)
             btn.setStyleSheet(
-                "QPushButton { background: transparent; color: #b8d9ff; border: none; padding: 10px 12px; text-align: left; font: 600 11px 'Segoe UI'; }"
-                "QPushButton:hover { background: rgba(116, 214, 255, 0.1); color: #74d6ff; }"
+                "QPushButton { background: transparent; color: #b8d9ff; border: none; padding: 9px 10px; text-align: left; font: 600 11px 'Segoe UI'; border-radius: 6px; }"
+                "QPushButton:hover { background: rgba(116, 214, 255, 0.12); color: #74d6ff; }"
             )
             btn.clicked.connect(callback)
             layout.addWidget(btn)
 
+        layout.addSpacing(14)
+
+        # Active Projects section
+        proj_label = QLabel("ACTIVE PROJECTS")
+        proj_label.setStyleSheet("color: #74d6ff; font: 700 10px 'Segoe UI'; letter-spacing: 1.5px;")
+        layout.addWidget(proj_label)
+
+        projects = self.vault.get_projects()
+        for proj in projects:
+            p_btn = QPushButton(f"● {proj['name']}")
+            p_btn.setToolTip(f"Status: {proj['status']}\n{proj['notes']}")
+            p_btn.setStyleSheet(
+                "QPushButton { background: rgba(116, 214, 255, 0.04); color: #9cc5d9; border: 1px solid rgba(116, 214, 255, 0.15); "
+                "padding: 6px 8px; text-align: left; font: 500 10px 'Segoe UI'; border-radius: 5px; margin-bottom: 2px; }"
+                "QPushButton:hover { background: rgba(116, 214, 255, 0.15); color: #74d6ff; border: 1px solid rgba(116, 214, 255, 0.4); }"
+            )
+            p_btn.clicked.connect(lambda ch, p=proj: self._on_select_project(p))
+            layout.addWidget(p_btn)
+
         layout.addStretch()
 
-        # User info at bottom
-        user_label = QLabel("User: Shruthy")
-        user_label.setStyleSheet("color: #7cb5ff; font: 500 10px 'Segoe UI'; padding: 8px;")
-        user_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(user_label)
+        # User profile badge
+        user_card = QFrame()
+        user_card.setStyleSheet("background: rgba(116, 214, 255, 0.06); border: 1px solid rgba(116, 214, 255, 0.15); border-radius: 8px; padding: 8px;")
+        user_layout = QVBoxLayout(user_card)
+        user_layout.setContentsMargins(6, 6, 6, 6)
+        user_layout.setSpacing(2)
+
+        user_tag = QLabel("USER IDENTITY")
+        user_tag.setStyleSheet("color: #74d6ff; font: 700 9px 'Segoe UI'; letter-spacing: 1px;")
+        user_name = QLabel("Shruthy (ECE)")
+        user_name.setStyleSheet("color: #ffffff; font: 600 11px 'Segoe UI';")
+        user_layout.addWidget(user_tag)
+        user_layout.addWidget(user_name)
+        layout.addWidget(user_card)
 
         return sidebar
 
     def _build_header(self) -> QFrame:
-        """Build the top header with status."""
+        """Build the top header with status and Tone Switcher."""
         header = QFrame()
         header.setStyleSheet(
-            "QFrame { background: rgba(13, 23, 33, 0.6); border-bottom: 1px solid rgba(116, 214, 255, 0.15); }"
+            "QFrame { background: rgba(7, 18, 30, 0.85); border-bottom: 1px solid rgba(116, 214, 255, 0.18); }"
         )
-        header.setFixedHeight(60)
+        header.setFixedHeight(64)
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(22, 0, 22, 0)
+        layout.setSpacing(14)
 
-        # Title
+        # Title & Online status
         title = QLabel("MR. STARK")
-        title.setStyleSheet("font: 700 24px 'Segoe UI'; color: #74d6ff; letter-spacing: 2px;")
+        title.setStyleSheet("font: 800 20px 'Segoe UI'; color: #74d6ff; letter-spacing: 2px;")
         layout.addWidget(title, 0)
 
-        layout.addSpacing(16)
-
-        # Status indicator
         self.status_indicator = QLabel("●")
-        self.status_indicator.setStyleSheet("color: #74d6ff; font: 700 20px; margin: 0px 4px;")
+        self.status_indicator.setStyleSheet("color: #74d6ff; font: 700 18px; margin: 0px 4px;")
         self.status_label = QLabel("ONLINE")
-        self.status_label.setStyleSheet("color: #b8d9ff; font: 600 12px 'Segoe UI'; letter-spacing: 1px;")
-        status_layout = QHBoxLayout()
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(6)
-        status_layout.addWidget(self.status_indicator, 0)
-        status_layout.addWidget(self.status_label, 0)
-        status_frame = QFrame()
-        status_frame.setLayout(status_layout)
-        layout.addWidget(status_frame, 0)
+        self.status_label.setStyleSheet("color: #b8d9ff; font: 600 11px 'Segoe UI'; letter-spacing: 1px;")
+
+        status_box = QHBoxLayout()
+        status_box.setContentsMargins(0, 0, 0, 0)
+        status_box.setSpacing(4)
+        status_box.addWidget(self.status_indicator)
+        status_box.addWidget(self.status_label)
+        status_widget = QWidget()
+        status_widget.setLayout(status_box)
+        layout.addWidget(status_widget, 0)
+
+        layout.addSpacing(20)
+
+        # TONE SWITCHER: Sarcastic, Serious, Supportive
+        tone_box = QFrame()
+        tone_box.setStyleSheet(
+            "QFrame { background: rgba(5, 13, 23, 0.85); border: 1px solid rgba(116, 214, 255, 0.22); border-radius: 8px; padding: 2px; }"
+        )
+        tone_layout = QHBoxLayout(tone_box)
+        tone_layout.setContentsMargins(4, 3, 4, 3)
+        tone_layout.setSpacing(4)
+
+        tone_tag = QLabel("PERSONA:")
+        tone_tag.setStyleSheet("color: rgba(184, 217, 255, 0.6); font: 700 9px 'Segoe UI'; margin-right: 4px;")
+        tone_layout.addWidget(tone_tag)
+
+        self.btn_tone_sarcastic = QPushButton("⚡ SARCASTIC")
+        self.btn_tone_sarcastic.setToolTip("Stark's default mode: Witty, blunt, playfully rude, challenging, brilliant.")
+        self.btn_tone_sarcastic.clicked.connect(lambda: self.set_active_tone(ToneMode.SARCASTIC))
+
+        self.btn_tone_serious = QPushButton("📐 SERIOUS")
+        self.btn_tone_serious.setToolTip("Pure technical mode: Direct, mathematically rigorous, zero sarcasm.")
+        self.btn_tone_serious.clicked.connect(lambda: self.set_active_tone(ToneMode.SERIOUS))
+
+        self.btn_tone_supportive = QPushButton("🛡️ SUPPORTIVE")
+        self.btn_tone_supportive.setToolTip("Attentive mentor mode: Empathetic, supportive, listening first.")
+        self.btn_tone_supportive.clicked.connect(lambda: self.set_active_tone(ToneMode.SUPPORTIVE))
+
+        for b in [self.btn_tone_sarcastic, self.btn_tone_serious, self.btn_tone_supportive]:
+            b.setFixedHeight(28)
+            tone_layout.addWidget(b)
+
+        self._refresh_tone_button_styles()
+        layout.addWidget(tone_box, 0)
 
         layout.addStretch()
 
-        # Mode toggle buttons
-        self.text_mode_button = QPushButton("TEXT")
-        self.text_mode_button.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.05); color: #EAF7FF; border: 1px solid rgba(124, 213, 255, 0.3); "
-            "border-radius: 6px; padding: 6px 14px; font: 600 10px 'Segoe UI'; } "
-            "QPushButton:hover { background: rgba(124, 213, 255, 0.12); }"
+        # Telemetry chip
+        model_chip = QLabel("◈ GEMINI 3.6 / 3.8 FLASH")
+        model_chip.setStyleSheet(
+            "background: rgba(116, 214, 255, 0.08); color: #74d6ff; border: 1px solid rgba(116, 214, 255, 0.25); "
+            "border-radius: 6px; padding: 5px 10px; font: 600 10px 'Courier New'; letter-spacing: 1px;"
         )
-        self.text_mode_button.clicked.connect(lambda: self.set_mode("text"))
-        self.text_mode_button.setVisible(True)
-        layout.addWidget(self.text_mode_button, 0)
-
-        self.voice_mode_button = QPushButton("VOICE")
-        self.voice_mode_button.setStyleSheet(
-            "QPushButton { background: rgba(116, 214, 255, 0.15); color: #74d6ff; border: 1px solid rgba(124, 213, 255, 0.5); "
-            "border-radius: 6px; padding: 6px 14px; font: 600 10px 'Segoe UI'; } "
-            "QPushButton:hover { background: rgba(124, 213, 255, 0.25); }"
-        )
-        self.voice_mode_button.clicked.connect(lambda: self.set_mode("voice"))
-        self.voice_mode_button.setVisible(False)
-        layout.addWidget(self.voice_mode_button, 0)
+        layout.addWidget(model_chip, 0)
 
         return header
 
-    def _build_voice_mode(self) -> QWidget:
-        """Build the voice mode main content area."""
+    def _build_center_workspace(self) -> QWidget:
+        """Build the unified conversational engineering workspace."""
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(0)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
 
-        # Reactor + info in center
-        center_layout = QHBoxLayout()
-        center_layout.setSpacing(40)
-
-        # Left: Arc Reactor
-        reactor_frame = QFrame()
-        reactor_frame.setStyleSheet("background: transparent;")
-        reactor_layout = QVBoxLayout(reactor_frame)
-        reactor_layout.setAlignment(Qt.AlignCenter)
-        reactor_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.reactor_widget = ArcReactorWidget()
-        self.reactor_widget.setFixedSize(360, 360)
-        self.reactor_widget.set_state(self.voice_state)
-        reactor_layout.addWidget(self.reactor_widget, alignment=Qt.AlignCenter)
-
-        center_layout.addWidget(reactor_frame, 0, Qt.AlignCenter)
-
-        # Right: System info and quick actions
-        info_frame = QFrame()
-        info_frame.setStyleSheet(
-            "QFrame { background: rgba(13, 23, 33, 0.7); border: 1px solid rgba(116, 214, 255, 0.15); border-radius: 12px; }"
-        )
-        info_layout = QVBoxLayout(info_frame)
-        info_layout.setContentsMargins(20, 16, 20, 16)
-        info_layout.setSpacing(12)
-
-        # Voice status label
-        info_label = QLabel("VOICE ASSISTANT")
-        info_label.setStyleSheet("color: #74d6ff; font: 700 12px 'Segoe UI'; letter-spacing: 1px;")
-        info_layout.addWidget(info_label)
-
-        # Status text
-        self.voice_status = QLabel("Ready")
-        self.voice_status.setStyleSheet("color: #b8d9ff; font: 500 11px 'Segoe UI'; line-height: 1.5;")
-        self.voice_status.setWordWrap(True)
-        info_layout.addWidget(self.voice_status)
-
-        info_layout.addSpacing(12)
-
-        # Quick action buttons
-        action_label = QLabel("QUICK ACTIONS")
-        action_label.setStyleSheet("color: #74d6ff; font: 700 11px 'Segoe UI'; letter-spacing: 1px;")
-        info_layout.addWidget(action_label)
-
-        for action_name in ["Run Scan", "Open Console", "Guard Review"]:
-            btn = QPushButton(action_name)
-            btn.setStyleSheet(
-                "QPushButton { background: rgba(116, 214, 255, 0.1); color: #b8d9ff; border: 1px solid rgba(116, 214, 255, 0.25); "
-                "border-radius: 6px; padding: 8px 12px; font: 500 10px 'Segoe UI'; } "
-                "QPushButton:hover { background: rgba(116, 214, 255, 0.2); color: #74d6ff; }"
-            )
-            btn.clicked.connect(lambda checked, n=action_name: self.handle_action(n))
-            info_layout.addWidget(btn)
-
-        info_layout.addStretch()
-        center_layout.addWidget(info_frame, 1)
-
-        layout.addLayout(center_layout, 1)
-        return container
-
-    def _build_text_mode(self) -> QWidget:
-        """Build the text/chat mode main content area."""
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
-
-        # Chat area
+        # Chat stream panel
         chat_frame = QFrame()
         chat_frame.setStyleSheet(
-            "QFrame { background: rgba(13, 23, 33, 0.7); border: 1px solid rgba(116, 214, 255, 0.15); border-radius: 12px; }"
+            "QFrame { background: rgba(6, 15, 26, 0.7); border: 1px solid rgba(116, 214, 255, 0.16); border-radius: 12px; }"
         )
         chat_layout = QVBoxLayout(chat_frame)
-        chat_layout.setContentsMargins(16, 16, 16, 16)
+        chat_layout.setContentsMargins(16, 14, 16, 14)
         chat_layout.setSpacing(10)
 
-        # Console output
-        self.console_output = QTextEdit()
-        self.console_output.setReadOnly(True)
-        self.console_output.setPlainText("Welcome to MR. STARK. Ready for interaction.\n")
-        self.console_output.setStyleSheet(
-            "QTextEdit { background: rgba(7, 17, 32, 0.8); color: #EAF7FF; border: 1px solid rgba(116, 214, 255, 0.15); "
-            "border-radius: 8px; padding: 12px; font: 500 11px 'Courier New'; }"
-        )
-        chat_layout.addWidget(self.console_output, 1)
+        # Chat stream header
+        stream_header = QHBoxLayout()
+        stream_title = QLabel("◈ CONVERSATION STREAM // ACTIVE SESSION")
+        stream_title.setStyleSheet("color: #74d6ff; font: 700 10px 'Segoe UI'; letter-spacing: 1.5px;")
+        stream_header.addWidget(stream_title)
+        stream_header.addStretch()
 
-        # Input area
-        input_frame = QFrame()
-        input_frame.setStyleSheet("background: transparent;")
-        input_layout = QHBoxLayout(input_frame)
-        input_layout.setContentsMargins(0, 0, 0, 0)
+        btn_copy = QPushButton("📋 Copy Last Answer")
+        btn_copy.setStyleSheet(
+            "QPushButton { background: transparent; color: #9cc5d9; border: 1px solid rgba(116, 214, 255, 0.2); "
+            "padding: 4px 10px; font: 600 10px 'Segoe UI'; border-radius: 5px; }"
+            "QPushButton:hover { background: rgba(116, 214, 255, 0.15); color: #74d6ff; }"
+        )
+        btn_copy.clicked.connect(self.copy_last_response)
+        stream_header.addWidget(btn_copy)
+        chat_layout.addLayout(stream_header)
+
+        # Rich Chat Display
+        self.chat_display = QTextEdit()
+        self.chat_display.setReadOnly(True)
+        self.chat_display.setStyleSheet(
+            "QTextEdit { background: rgba(4, 11, 20, 0.9); color: #EAF7FF; border: 1px solid rgba(116, 214, 255, 0.18); "
+            "border-radius: 8px; padding: 14px; font: 500 11px 'Segoe UI'; }"
+        )
+        chat_layout.addWidget(self.chat_display, 1)
+
+        # QUICK ACTION CHIPS
+        chips_frame = QFrame()
+        chips_frame.setStyleSheet("background: transparent;")
+        chips_layout = QHBoxLayout(chips_frame)
+        chips_layout.setContentsMargins(0, 0, 0, 0)
+        chips_layout.setSpacing(8)
+
+        chips_label = QLabel("QUICK ACTIONS:")
+        chips_label.setStyleSheet("color: rgba(116, 214, 255, 0.7); font: 700 9px 'Segoe UI'; letter-spacing: 1px;")
+        chips_layout.addWidget(chips_label)
+
+        chips = [
+            ("⚡ Explain Circuit", "Stark, explain how this circuit works and calculate the component values: "),
+            ("🛠 Debug Code", "Stark, critique this code and tell me why it will fail: "),
+            ("💡 Exosuit Actuator", "Stark, let's analyze torque and actuator specs for the exosuit elbow joint: "),
+            ("🎯 Challenge My Idea", "Stark, tear apart my engineering assumptions on this concept: "),
+        ]
+
+        for label, prompt_prefix in chips:
+            btn_chip = QPushButton(label)
+            btn_chip.setStyleSheet(
+                "QPushButton { background: rgba(116, 214, 255, 0.06); color: #b8d9ff; border: 1px solid rgba(116, 214, 255, 0.2); "
+                "border-radius: 6px; padding: 4px 10px; font: 600 10px 'Segoe UI'; }"
+                "QPushButton:hover { background: rgba(116, 214, 255, 0.18); color: #74d6ff; border: 1px solid #74d6ff; }"
+            )
+            btn_chip.clicked.connect(lambda ch, p=prompt_prefix: self._insert_chip_prompt(p))
+            chips_layout.addWidget(btn_chip)
+
+        chips_layout.addStretch()
+        chat_layout.addWidget(chips_frame)
+
+        # COMMAND INPUT BAR
+        input_container = QFrame()
+        input_container.setStyleSheet(
+            "QFrame { background: rgba(5, 14, 24, 0.95); border: 1px solid rgba(116, 214, 255, 0.3); border-radius: 10px; padding: 4px; }"
+        )
+        input_layout = QHBoxLayout(input_container)
+        input_layout.setContentsMargins(6, 4, 6, 4)
         input_layout.setSpacing(8)
 
+        # Integrated Voice Toggle
+        self.voice_toggle_button = QPushButton("🎤 Voice: OFF")
+        self.voice_toggle_button.setFixedHeight(38)
+        self.voice_toggle_button.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.04); color: #b8d9ff; border: 1px solid rgba(116, 214, 255, 0.2); "
+            "border-radius: 6px; padding: 8px 14px; font: 600 10px 'Segoe UI'; }"
+            "QPushButton:hover { background: rgba(116, 214, 255, 0.12); color: #74d6ff; }"
+        )
+        self.voice_toggle_button.clicked.connect(self.toggle_voice_activation)
+        input_layout.addWidget(self.voice_toggle_button)
+
+        # Text input
         self.command_input = QLineEdit()
-        self.command_input.setPlaceholderText("Ask MR. STARK...")
+        self.command_input.setFixedHeight(38)
+        self.command_input.setPlaceholderText("Ask MR. STARK or say 'Hey Mr. Stark'...")
         self.command_input.returnPressed.connect(self.send_console_prompt)
         input_layout.addWidget(self.command_input, 1)
 
-        send_button = QPushButton("SEND")
-        send_button.setStyleSheet(
-            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            "stop:0 #3a8dff, stop:1 #6cb5ff); color: #061420; border: none; "
-            "border-radius: 6px; padding: 9px 20px; font: 700 11px 'Segoe UI'; } "
-            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            "stop:0 #4a9dff, stop:1 #7cc5ff); }"
+        # Send button
+        self.send_button = QPushButton("SEND ➜")
+        self.send_button.setFixedHeight(38)
+        self.send_button.setStyleSheet(
+            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a75ff, stop:1 #52b8ff); "
+            "color: #030a12; border: none; border-radius: 6px; padding: 8px 22px; font: 800 11px 'Segoe UI'; letter-spacing: 1px; }"
+            "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2b84ff, stop:1 #6eccff); }"
         )
-        send_button.clicked.connect(self.send_console_prompt)
-        input_layout.addWidget(send_button, 0)
+        self.send_button.clicked.connect(self.send_console_prompt)
+        input_layout.addWidget(self.send_button)
 
-        chat_layout.addWidget(input_frame, 0)
+        # Stop button
+        self.stop_voice_button = QPushButton("⏹ STOP")
+        self.stop_voice_button.setFixedHeight(38)
+        self.stop_voice_button.setStyleSheet(
+            "QPushButton { background: rgba(255, 75, 75, 0.15); color: #ffb4b4; border: 1px solid rgba(255, 75, 75, 0.35); "
+            "border-radius: 6px; padding: 8px 14px; font: 700 10px 'Segoe UI'; }"
+            "QPushButton:hover { background: rgba(255, 75, 75, 0.28); color: #ffffff; }"
+        )
+        self.stop_voice_button.clicked.connect(self.interrupt_voice)
+        self.stop_voice_button.setEnabled(False)
+        input_layout.addWidget(self.stop_voice_button)
+
+        chat_layout.addWidget(input_container)
         layout.addWidget(chat_frame, 1)
 
         return container
 
-    def _build_control_bar(self) -> QFrame:
-        """Build the bottom control bar."""
-        bar = QFrame()
-        bar.setStyleSheet(
-            "QFrame { background: rgba(13, 23, 33, 0.6); border-top: 1px solid rgba(116, 214, 255, 0.15); }"
-        )
-        bar.setFixedHeight(70)
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(12)
-
-        # Primary activation button
-        self.primary_button = QPushButton("ACTIVATE CORE")
-        self.primary_button.setStyleSheet(
-            "QPushButton { background: rgba(116, 214, 255, 0.15); color: #74d6ff; border: 1px solid rgba(116, 214, 255, 0.35); "
-            "border-radius: 8px; padding: 12px 20px; font: 700 11px 'Segoe UI'; } "
-            "QPushButton:hover { background: rgba(116, 214, 255, 0.25); }"
-        )
-        self.primary_button.clicked.connect(self.on_activate)
-        layout.addWidget(self.primary_button)
-
-        layout.addSpacing(12)
-
-        # Voice toggle
-        self.voice_toggle_button = QPushButton("🎤 Voice: OFF")
-        self.voice_toggle_button.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.05); color: #b8d9ff; border: 1px solid rgba(125,152,180,0.28); "
-            "border-radius: 8px; padding: 10px 16px; font: 600 10px 'Segoe UI'; } "
-            "QPushButton:hover { background: rgba(255,255,255,0.1); }"
-        )
-        self.voice_toggle_button.clicked.connect(self.toggle_voice_activation)
-        layout.addWidget(self.voice_toggle_button)
-
-        # Stop button
-        self.stop_voice_button = QPushButton("⏹ STOP")
-        self.stop_voice_button.setStyleSheet(
-            "QPushButton { background: rgba(255,100,100,0.15); color: #ffc0c0; border: 1px solid rgba(255,100,100,0.35); "
-            "border-radius: 8px; padding: 10px 16px; font: 700 10px 'Segoe UI'; } "
-            "QPushButton:hover { background: rgba(255,100,100,0.25); }"
-        )
-        self.stop_voice_button.clicked.connect(self.interrupt_voice)
-        self.stop_voice_button.setEnabled(False)
-        layout.addWidget(self.stop_voice_button)
-
-        layout.addStretch()
-
-        return bar
-
     def _build_right_panel(self) -> QFrame:
-        """Build the right-side information panel."""
+        """Build the right-side holographic panel with Arc Reactor & Telemetry."""
         panel = QFrame()
         panel.setStyleSheet(
-            "QFrame { background: rgba(7, 17, 32, 0.95); border-left: 1px solid rgba(116, 214, 255, 0.15); }"
+            "QFrame { background: rgba(5, 13, 23, 0.96); border-left: 1px solid rgba(116, 214, 255, 0.18); }"
         )
-        panel.setFixedWidth(200)
+        panel.setFixedWidth(330)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 16, 12, 16)
+        layout.setContentsMargins(16, 18, 16, 18)
         layout.setSpacing(12)
 
-        # System status title
-        title = QLabel("SYSTEM STATUS")
-        title.setStyleSheet("color: #74d6ff; font: 700 11px 'Segoe UI'; letter-spacing: 1px;")
-        layout.addWidget(title)
+        # Reactor title
+        reactor_header = QLabel("◈ HOLOGRAPHIC CORE // TELEMETRY")
+        reactor_header.setStyleSheet("color: #74d6ff; font: 700 10px 'Segoe UI'; letter-spacing: 1.5px;")
+        layout.addWidget(reactor_header)
 
-        # Status items (non-functional display)
-        status_items = [
-            ("Voice Pipeline", "READY"),
-            ("Gemini API", "ACTIVE"),
-            ("Permissions", "ALLOWED"),
-            ("Memory Buffer", "OPTIMAL"),
+        # PROMINENT ARC REACTOR
+        reactor_frame = QFrame()
+        reactor_frame.setStyleSheet(
+            "QFrame { background: rgba(7, 18, 30, 0.7); border: 1px solid rgba(116, 214, 255, 0.2); border-radius: 12px; }"
+        )
+        reactor_layout = QVBoxLayout(reactor_frame)
+        reactor_layout.setContentsMargins(10, 14, 10, 14)
+        reactor_layout.setAlignment(Qt.AlignCenter)
+
+        self.reactor_widget = ArcReactorWidget(compact=True)
+        self.reactor_widget.setFixedSize(240, 240)
+        self.reactor_widget.set_state(self.voice_state)
+        reactor_layout.addWidget(self.reactor_widget, alignment=Qt.AlignCenter)
+
+        # Voice status badge
+        self.voice_status = QLabel("Ready to assist")
+        self.voice_status.setAlignment(Qt.AlignCenter)
+        self.voice_status.setStyleSheet("color: #b8d9ff; font: 600 11px 'Segoe UI'; padding-top: 4px;")
+        reactor_layout.addWidget(self.voice_status)
+
+        layout.addWidget(reactor_frame)
+
+        # Real System Telemetry Card
+        telem_card = QFrame()
+        telem_card.setStyleSheet(
+            "QFrame { background: rgba(7, 18, 30, 0.7); border: 1px solid rgba(116, 214, 255, 0.16); border-radius: 10px; padding: 10px; }"
+        )
+        telem_layout = QVBoxLayout(telem_card)
+        telem_layout.setContentsMargins(10, 10, 10, 10)
+        telem_layout.setSpacing(6)
+
+        telem_title = QLabel("SYSTEM METRICS")
+        telem_title.setStyleSheet("color: #74d6ff; font: 700 9px 'Segoe UI'; letter-spacing: 1px;")
+        telem_layout.addWidget(telem_title)
+
+        self.telemetry_labels = {}
+        metrics = [
+            ("Persona Mode", "SARCASTIC [DEFAULT]"),
+            ("Voice Pipeline", "CONTINUOUS WAKE-WORD"),
+            ("TTS Voice", "SAPI5 David (Male)"),
+            ("Local Vault", "stark_vault.db [ONLINE]"),
         ]
 
-        for label, value in status_items:
-            item_layout = QVBoxLayout()
-            item_layout.setContentsMargins(0, 0, 0, 0)
-            item_layout.setSpacing(2)
-            
-            label_w = QLabel(label)
-            label_w.setStyleSheet("color: #9cc5d9; font: 500 10px 'Segoe UI';")
-            item_layout.addWidget(label_w)
-            
-            value_w = QLabel(value)
-            value_w.setStyleSheet("color: #74d6ff; font: 600 10px 'Segoe UI'; margin-left: 8px;")
-            item_layout.addWidget(value_w)
-            
-            layout.addLayout(item_layout)
+        for k, v in metrics:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            lbl_k = QLabel(k)
+            lbl_k.setStyleSheet("color: rgba(184, 217, 255, 0.6); font: 500 10px 'Segoe UI';")
+            lbl_v = QLabel(v)
+            lbl_v.setStyleSheet("color: #74d6ff; font: 700 10px 'Segoe UI';")
+            row.addWidget(lbl_k)
+            row.addStretch()
+            row.addWidget(lbl_v)
+            telem_layout.addLayout(row)
+            self.telemetry_labels[k] = lbl_v
 
-        layout.addSpacing(12)
+        layout.addWidget(telem_card)
 
-        # Recent actions title
-        recent_title = QLabel("RECENT ACTIVITY")
-        recent_title.setStyleSheet("color: #74d6ff; font: 700 11px 'Segoe UI'; letter-spacing: 1px;")
-        layout.addWidget(recent_title)
+        # Live Activity Log
+        log_header = QLabel("LIVE EVENT LOG")
+        log_header.setStyleSheet("color: #74d6ff; font: 700 9px 'Segoe UI'; letter-spacing: 1px;")
+        layout.addWidget(log_header)
 
-        # Activity log
         self.activity_log = QTextEdit()
         self.activity_log.setReadOnly(True)
-        self.activity_log.setPlainText("System initialized.\n")
-        self.activity_log.setFixedHeight(120)
+        self.activity_log.setPlainText("System online.\nStark Personality Engine loaded.\n")
+        self.activity_log.setFixedHeight(110)
         self.activity_log.setStyleSheet(
-            "QTextEdit { background: rgba(13, 23, 33, 0.7); color: #7cb5ff; border: 1px solid rgba(116, 214, 255, 0.15); "
-            "border-radius: 6px; padding: 6px; font: 500 9px 'Courier New'; }"
+            "QTextEdit { background: rgba(4, 11, 20, 0.85); color: #7cb5ff; border: 1px solid rgba(116, 214, 255, 0.15); "
+            "border-radius: 6px; padding: 6px; font: 500 9px 'Consolas', monospace; }"
         )
         layout.addWidget(self.activity_log)
 
-        layout.addStretch()
-
         return panel
 
+    def _refresh_tone_button_styles(self) -> None:
+        """Update active visual state for tone buttons."""
+        active = self.stark_voice.get_tone()
+        active_style = (
+            "QPushButton { background: rgba(116, 214, 255, 0.25); color: #74d6ff; border: 1px solid #74d6ff; "
+            "border-radius: 6px; font: 700 10px 'Segoe UI'; padding: 4px 10px; }"
+        )
+        inactive_style = (
+            "QPushButton { background: transparent; color: rgba(184, 217, 255, 0.7); border: 1px solid transparent; "
+            "border-radius: 6px; font: 600 10px 'Segoe UI'; padding: 4px 10px; }"
+            "QPushButton:hover { background: rgba(116, 214, 255, 0.1); color: #b8d9ff; }"
+        )
+
+        self.btn_tone_sarcastic.setStyleSheet(active_style if active == ToneMode.SARCASTIC else inactive_style)
+        self.btn_tone_serious.setStyleSheet(active_style if active == ToneMode.SERIOUS else inactive_style)
+        self.btn_tone_supportive.setStyleSheet(active_style if active == ToneMode.SUPPORTIVE else inactive_style)
+
+    def set_active_tone(self, tone: str) -> None:
+        """Switch active personality tone."""
+        self.stark_voice.set_tone(tone)
+        self._refresh_tone_button_styles()
+
+        tone_names = {
+            ToneMode.SARCASTIC: "SIGNATURE SARCASTIC (Default)",
+            ToneMode.SERIOUS: "SERIOUS ENGINEERING (Pure Rigor)",
+            ToneMode.SUPPORTIVE: "SUPPORTIVE MENTOR (Empathy)",
+        }
+        name = tone_names.get(tone, tone.upper())
+        if "Persona Mode" in self.telemetry_labels:
+            self.telemetry_labels["Persona Mode"].setText(tone.upper())
+
+        self.append_system_message(f"Tone shifted to [{name}]. Directives updated.")
+        self.append_activity_log(f"Tone switched to {tone}")
+
+    def generate_startup_greeting(self) -> None:
+        """Generate and display dynamic context-aware startup greeting."""
+        greeting = self.stark_voice.greeting(self.gemini_client)
+        self.append_chat_message("model", greeting, tone=self.stark_voice.get_tone())
+        self.vault.save_message("model", greeting, tone=self.stark_voice.get_tone())
+        self.last_assistant_response = greeting
+        self.append_activity_log("Dynamic greeting dispatched")
+
+    def _insert_chip_prompt(self, prefix: str) -> None:
+        """Insert quick action chip text into input field."""
+        self.command_input.setText(prefix)
+        self.command_input.setFocus()
+        self.command_input.setCursorPosition(len(prefix))
+
+    def copy_last_response(self) -> None:
+        """Copy Mr. Stark's latest response to clipboard."""
+        if self.last_assistant_response:
+            QApplication.clipboard().setText(self.last_assistant_response)
+            self.append_system_message("Copied last response to clipboard.")
+            self.append_activity_log("Response copied to clipboard")
+        else:
+            self.append_system_message("No recent response to copy.")
+
+    def _format_markdown_to_html(self, text: str) -> str:
+        """Converts markdown bold, italic, code blocks, and math into rich HTML."""
+        escaped = html.escape(text)
+
+        # Fenced code blocks ```lang ... ```
+        def _code_repl(m):
+            code = m.group(1).strip()
+            return (
+                f'<div style="background-color: #03080e; border: 1px solid rgba(116, 214, 255, 0.35); '
+                f'border-radius: 6px; padding: 10px 12px; margin: 8px 0; font-family: \'Consolas\', monospace; '
+                f'color: #a8d5ff; font-size: 11px; white-space: pre-wrap;">{code}</div>'
+            )
+        escaped = re.sub(r'```(?:[a-zA-Z0-9_-]+)?\n(.*?)```', _code_repl, escaped, flags=re.DOTALL)
+
+        # Inline code `code`
+        escaped = re.sub(
+            r'`([^`]+)`',
+            r'<code style="background-color: rgba(116, 214, 255, 0.16); color: #74d6ff; padding: 1px 5px; '
+            r'border-radius: 3px; font-family: \'Consolas\', monospace;">\1</code>',
+            escaped
+        )
+
+        # Bold **text**
+        escaped = re.sub(r'\*\*(.+?)\*\*', r'<strong style="color: #ffffff;">\1</strong>', escaped)
+
+        # Italic *text*
+        escaped = re.sub(r'\*(.+?)\*', r'<em>\1</em>', escaped)
+
+        # Linebreaks
+        escaped = escaped.replace('\n', '<br>')
+        return escaped
+
+    def append_chat_message(self, role: str, text: str, tone: Optional[str] = None) -> None:
+        """Appends a styled HTML chat bubble into the conversation stream."""
+        now_str = datetime.now().strftime("%I:%M %p")
+        formatted = self._format_markdown_to_html(text)
+        active_tone = tone or self.stark_voice.get_tone()
+
+        if role == "user":
+            card = f"""
+            <div style="margin: 8px 0px 8px 50px; padding: 12px 16px; background-color: rgba(16, 38, 62, 0.88); 
+                        border: 1px solid rgba(116, 214, 255, 0.3); border-radius: 12px 12px 2px 12px;">
+                <div style="color: #74d6ff; font-size: 10px; font-weight: 700; margin-bottom: 4px; letter-spacing: 1px;">
+                    SHRUTHY (kiddo) <span style="color: rgba(184, 217, 255, 0.5); font-weight: normal; margin-left: 8px;">{now_str}</span>
+                </div>
+                <div style="color: #eaf7ff; font-size: 12px; line-height: 1.5;">{formatted}</div>
+            </div>
+            """
+        elif role == "model":
+            badge = f"MR. STARK [{active_tone.upper()}]"
+            card = f"""
+            <div style="margin: 8px 50px 8px 0px; padding: 14px 18px; background-color: rgba(6, 17, 29, 0.92); 
+                        border-left: 3px solid #74d6ff; border-top: 1px solid rgba(116, 214, 255, 0.2); 
+                        border-right: 1px solid rgba(116, 214, 255, 0.15); border-bottom: 1px solid rgba(116, 214, 255, 0.2); 
+                        border-radius: 2px 12px 12px 12px;">
+                <div style="color: #74d6ff; font-size: 11px; font-weight: 700; margin-bottom: 6px; letter-spacing: 1.5px;">
+                    ◈ {badge} <span style="color: rgba(184, 217, 255, 0.45); font-size: 10px; font-weight: normal; margin-left: 10px;">{now_str}</span>
+                </div>
+                <div style="color: #d8eeff; font-size: 12px; line-height: 1.55;">{formatted}</div>
+            </div>
+            """
+        else:
+            card = f"""
+            <div style="margin: 6px 30px; padding: 6px 12px; background-color: rgba(116, 214, 255, 0.08); 
+                        border: 1px dashed rgba(116, 214, 255, 0.28); border-radius: 6px; text-align: center;">
+                <span style="color: #74d6ff; font-size: 10px; font-weight: 600; letter-spacing: 1px;">{formatted}</span>
+            </div>
+            """
+
+        self.chat_display.append(card)
+        self.chat_display.ensureCursorVisible()
+
+    def append_system_message(self, text: str) -> None:
+        """Display a subtle system announcement in the chat."""
+        self.append_chat_message("system", text)
+
+    def append_console(self, text: str) -> None:
+        """Backwards compatibility helper for existing worker/action logs."""
+        self.append_system_message(text)
+        self.append_activity_log(text)
+
+    def append_activity_log(self, text: str) -> None:
+        """Add entry to right panel activity log."""
+        if hasattr(self, "activity_log"):
+            self.activity_log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
+            self.activity_log.ensureCursorVisible()
+
+    def send_console_prompt(self) -> None:
+        """Send a message through the Gemini pipeline with active personality and persistence."""
+        prompt = self.command_input.text().strip() if hasattr(self, "command_input") else ""
+        if not prompt:
+            self.append_system_message("Please enter a message.")
+            if hasattr(self, "command_input"):
+                self.command_input.setFocus()
+            return
+
+        if self.gemini_request_in_flight:
+            self.append_system_message("MR. STARK is already calculating a response.")
+            return
+
+        # Render user message
+        self.append_chat_message("user", prompt)
+        self.vault.save_message("user", prompt, tone=self.stark_voice.get_tone())
+        self.command_input.clear()
+        self.command_input.setEnabled(False)
+        self.update_voice_state("processing")
+        self.append_activity_log(f"Request: '{prompt[:30]}...'")
+
+        if self.gemini_client is None:
+            self.append_chat_message("model", "Gemini configuration missing. Check your GEMINI_API_KEY in the .env file.", tone="serious")
+            self.command_input.setEnabled(True)
+            self.command_input.setFocus()
+            self.update_voice_state("idle")
+            return
+
+        self.gemini_request_in_flight = True
+        try:
+            self.conversation_history.append({"role": "user", "parts": [{"text": prompt}]})
+            recent_history = self.conversation_history[-self._max_history_messages:]
+
+            request_config = genai.types.GenerateContentConfig(
+                system_instruction=self.stark_voice.system_instructions(current_datetime=datetime.now()),
+            )
+
+            # Try primary active model, fallback to 3.8 if needed
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=recent_history,
+                    config=request_config,
+                )
+            except Exception:
+                response = self.gemini_client.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=recent_history,
+                    config=request_config,
+                )
+
+            answer = response.text if (response and response.text) else "No response received from Gemini."
+            self.last_assistant_response = answer
+
+            self.conversation_history.append({"role": "model", "parts": [{"text": answer}]})
+            self.conversation_history = self.conversation_history[-(self._max_history_messages * 2):]
+
+            # Render assistant message
+            self.append_chat_message("model", answer, tone=self.stark_voice.get_tone())
+            self.vault.save_message("model", answer, tone=self.stark_voice.get_tone())
+            self.append_activity_log("Response received from Gemini")
+
+            # Speak response
+            self.speak_response(answer)
+
+        except APIError as exc:
+            self.append_system_message(f"Gemini API error: {exc}")
+            self.append_activity_log(f"API Error: {exc}")
+        except Exception as exc:
+            self.append_system_message(f"Unable to reach Gemini API: {exc}")
+            self.append_activity_log(f"Connection Error: {exc}")
+        finally:
+            self.gemini_request_in_flight = False
+            self.command_input.setEnabled(True)
+            self.command_input.setFocus()
+
+    def update_voice_state(self, state: str) -> None:
+        """Update visual representation across Arc Reactor and status labels."""
+        self.voice_state = state
+        state_map = {
+            "idle": "Ready to assist",
+            "standby": "Listening for 'Hey Mr. Stark'",
+            "listening": "Actively listening...",
+            "processing": "Calculating with Gemini...",
+            "speaking": "Speaking response...",
+        }
+        if hasattr(self, "voice_status"):
+            self.voice_status.setText(state_map.get(state, "Ready to assist"))
+
+        if hasattr(self, "reactor_widget"):
+            self.reactor_widget.set_state(state)
+
     def _init_voice_system(self) -> None:
-        """Initialize voice and speech recognition systems."""
+        """Initialize TTS engine and SpeechRecognizer."""
         if pyttsx3 is not None:
             try:
                 self.voice_engine = pyttsx3.init()
-                self.voice_engine.setProperty("rate", 170)
+                self.voice_engine.setProperty("rate", 175)
                 self.voice_engine.setProperty("volume", 1.0)
-                
-                voices = self.voice_engine.getProperty('voices')
+
+                voices = self.voice_engine.getProperty("voices")
                 male_voice = None
                 for voice in voices:
-                    if hasattr(voice, 'gender') and voice.gender.lower() == 'male':
+                    if hasattr(voice, "gender") and str(voice.gender).lower() == "male":
                         male_voice = voice.id
                         break
-                
+                    if "david" in voice.id.lower() or "david" in getattr(voice, "name", "").lower():
+                        male_voice = voice.id
+                        break
+
                 if male_voice:
-                    self.voice_engine.setProperty('voice', male_voice)
-                    print(f"[TTS] Selected male voice: {male_voice}")
-                else:
-                    print(f"[TTS] No male voice found, using default. Available voices: {len(voices)}")
+                    self.voice_engine.setProperty("voice", male_voice)
+                    print(f"[TTS] Selected voice: {male_voice}")
             except Exception as e:
                 self.voice_engine = None
                 print(f"[TTS] Error initializing voice engine: {e}")
@@ -978,89 +1277,45 @@ class StarkMainWindow(QMainWindow):
                 self.recognizer = None
                 self.microphone = None
 
-    def set_mode(self, mode: str) -> None:
-        """Switch between voice and text modes."""
-        self.ui_mode = mode
-        if mode == "voice":
-            self.content_area.setCurrentWidget(self.voice_page)
-            self.voice_mode_button.setVisible(False)
-            self.text_mode_button.setVisible(True)
-        else:
-            self.content_area.setCurrentWidget(self.text_page)
-            self.voice_mode_button.setVisible(True)
-            self.text_mode_button.setVisible(False)
-            if hasattr(self, "command_input"):
-                self.command_input.setFocus()
-
-    def update_voice_state(self, state: str) -> None:
-        """Update the visual representation of voice state."""
-        self.voice_state = state
-        if hasattr(self, "voice_status"):
-            state_map = {
-                "idle": "Ready to assist",
-                "standby": "Listening for wake word 'Hey Mr. Stark'",
-                "listening": "Actively listening...",
-                "processing": "Processing your request...",
-                "speaking": "Speaking response...",
-            }
-            self.voice_status.setText(state_map.get(state, "Ready to assist"))
-        
-        if hasattr(self, "reactor_widget"):
-            if state == "standby":
-                self.reactor_widget.set_state("idle")
-            elif state == "listening":
-                self.reactor_widget.set_state("listening")
-            elif state == "processing":
-                self.reactor_widget.set_state("processing")
-            elif state == "speaking":
-                self.reactor_widget.set_state("speaking")
-            else:
-                self.reactor_widget.set_state("idle")
-
-    def append_console(self, text: str) -> None:
-        """Append text to the console output."""
-        if hasattr(self, "console_output"):
-            self.console_output.append(text)
-            self.console_output.ensureCursorVisible()
-        if hasattr(self, "activity_log"):
-            self.activity_log.append(text)
-            self.activity_log.ensureCursorVisible()
-
     def toggle_voice_activation(self) -> None:
-        """Toggle voice input on/off."""
+        """Toggle continuous voice input on/off."""
         if self.voice_enabled:
             self.interrupt_voice()
             return
 
         if self.recognizer is None or self.microphone is None:
-            self.append_console("Voice input is not available in this environment.")
+            self.append_system_message("Voice input is not available on this device.")
             return
 
         self.voice_enabled = True
         self.voice_toggle_button.setText("🎤 Voice: ON")
+        self.voice_toggle_button.setStyleSheet(
+            "QPushButton { background: rgba(116, 214, 255, 0.25); color: #74d6ff; border: 1px solid #74d6ff; "
+            "border-radius: 6px; padding: 8px 14px; font: 700 10px 'Segoe UI'; }"
+        )
         self.stop_voice_button.setEnabled(True)
         self.voice_stop_requested = False
         self.voice_stop_event = threading.Event()
-        
+
         initial_state = "standby" if self.wake_word_enabled else "listening"
         self.voice_in_standby = self.wake_word_enabled
         self.update_voice_state(initial_state)
-        
+
         if self.wake_word_enabled:
-            self.append_console("[Voice] Say 'Hey Mr. Stark' to activate.")
+            self.append_system_message("Voice active. Say 'Hey Mr. Stark' to summon.")
         else:
-            self.append_console("[Voice] Listening... Speak when ready.")
+            self.append_system_message("Listening continuously... Speak when ready.")
 
         self.voice_thread = QThread(self)
         self.voice_worker = VoiceCaptureWorker(
-            self.recognizer, 
-            self.microphone, 
+            self.recognizer,
+            self.microphone,
             self.voice_stop_event,
             self,
-            start_in_standby=self.wake_word_enabled
+            start_in_standby=self.wake_word_enabled,
         )
         self.voice_worker.moveToThread(self.voice_thread)
-        
+
         self.voice_thread.started.connect(self.voice_worker.run)
         self.voice_worker.utterance_captured.connect(self._handle_voice_utterance)
         self.voice_worker.wake_word_detected.connect(self._on_wake_word_detected)
@@ -1068,66 +1323,58 @@ class StarkMainWindow(QMainWindow):
         self.voice_worker.error.connect(self._handle_voice_error)
         self.voice_worker.worker_stopped.connect(self.voice_thread.quit)
         self.voice_worker.listening.connect(self._on_worker_listening)
-        
+
         self.voice_thread.start()
 
     def _handle_voice_utterance(self, text: str) -> None:
-        """Handle a captured voice utterance."""
+        """Handle captured speech utterance."""
         if not text.strip():
             return
 
-        print(f"[VOICE] Utterance recognized: '{text}'")
-        
         if self.inactivity_timer:
             self.inactivity_timer.stop()
             self.inactivity_timer.start(self.inactivity_timeout_seconds * 1000)
-        
-        self.append_console(f"You (voice): {text}")
+
         self.command_input.setText(text.strip())
-        self.update_voice_state("processing")
         self.send_console_prompt()
 
     def _handle_voice_error(self, message: str) -> None:
-        """Handle voice errors gracefully."""
-        print(f"[VOICE] Error: {message}")
-        self.append_console(f"[Voice] {message}")
+        """Handle non-fatal voice loop messages."""
+        self.append_activity_log(f"Voice: {message}")
 
     def interrupt_voice(self) -> None:
-        """Stop voice mode."""
-        print("[VOICE] Interrupt requested")
-        
+        """Interrupt active TTS speech or voice listening."""
         self.voice_stop_requested = True
         if self.voice_stop_event is not None:
             self.voice_stop_event.set()
-        
+
         if self.voice_engine is not None:
             try:
                 self.voice_engine.stop()
-                print("[TTS] Interrupted speech")
             except Exception:
                 pass
-        
+
         if self.voice_thread is not None and self.voice_thread.isRunning():
-            print("[VOICE] Waiting for worker to stop...")
             self.voice_thread.quit()
             self.voice_thread.wait(timeout=3000)
-        
+
         self.voice_enabled = False
         self.update_voice_state("idle")
         self.voice_toggle_button.setText("🎤 Voice: OFF")
+        self.voice_toggle_button.setStyleSheet(
+            "QPushButton { background: rgba(255,255,255,0.04); color: #b8d9ff; border: 1px solid rgba(116, 214, 255, 0.2); "
+            "border-radius: 6px; padding: 8px 14px; font: 600 10px 'Segoe UI'; }"
+        )
         self.stop_voice_button.setEnabled(False)
-        self.append_console("[Voice] Capture stopped.")
-        print("[VOICE] Voice mode stopped")
+        self.append_system_message("Voice capture stopped.")
 
     def _on_wake_word_detected(self) -> None:
-        """Handle wake-word detection."""
-        print("[VOICE] Wake word activation signal received")
+        """Wake word triggered."""
         self.inactivity_timer.stop()
         self.voice_in_standby = False
+        self.append_system_message("Wake-word detected! Mr. Stark is listening...")
 
     def _on_mode_changed(self, mode: str) -> None:
-        """Handle mode changes from the voice worker."""
-        print(f"[VOICE] Mode changed: {mode}")
         if mode == "active":
             self.voice_in_standby = False
             self.inactivity_timer.stop()
@@ -1139,154 +1386,82 @@ class StarkMainWindow(QMainWindow):
             self.update_voice_state("standby")
 
     def _on_worker_listening(self) -> None:
-        """Update listening state from worker."""
         if not self.voice_in_standby:
             self.update_voice_state("listening")
 
     def _on_inactivity_timeout(self) -> None:
-        """Handle inactivity timeout."""
-        if self.voice_worker and self.voice_worker.isRunning():
-            print("[VOICE] Inactivity timeout triggered - requesting standby mode")
+        if self.voice_worker and getattr(self.voice_worker, "is_running", False):
             self.voice_in_standby = True
             self.update_voice_state("standby")
-            self.append_console("[Voice] Returning to standby. Say 'Hey Mr. Stark' to activate.")
+            self.append_system_message("Returning to standby. Say 'Hey Mr. Stark' to wake.")
 
     def speak_response(self, text: str) -> None:
-        """Speak the response using TTS."""
+        """Speak the response using TTS with echo suppression."""
         if self.voice_engine is None or not text:
+            self.update_voice_state("idle" if not self.voice_enabled else ("standby" if self.voice_in_standby else "listening"))
             return
+
         try:
             self.update_voice_state("speaking")
-            
             self.microphone_suppressed = True
-            print("[TTS] Microphone suppressed - speaking")
-            
+            self.stop_voice_button.setEnabled(True)
+
+            # Strip code blocks and markdown symbols before TTS speaking for natural audio
+            clean_speech = re.sub(r'```.*?```', ' Code block omitted for voice playback. ', text, flags=re.DOTALL)
+            clean_speech = re.sub(r'[*_#`]', '', clean_speech)
+
             self.voice_engine.stop()
-            self.voice_engine.say(text)
+            self.voice_engine.say(clean_speech)
             self.voice_engine.runAndWait()
-            
-            print("[TTS] Speech complete")
-            
         except Exception as e:
-            print(f"[TTS] Error speaking: {e}")
+            print(f"[TTS] Speech error: {e}")
         finally:
             self.microphone_suppressed = False
-            print("[TTS] Microphone restored - resuming listening")
-            
-            if self.inactivity_timer and not self.voice_in_standby:
-                self.inactivity_timer.stop()
-                self.inactivity_timer.start(self.inactivity_timeout_seconds * 1000)
-            
             if self.voice_enabled:
-                if not self.voice_in_standby:
-                    self.update_voice_state("listening")
-                print("[TTS] Returning to listening state")
+                state = "standby" if self.voice_in_standby else "listening"
+                self.update_voice_state(state)
             else:
                 self.update_voice_state("idle")
+                self.stop_voice_button.setEnabled(False)
 
-    def send_console_prompt(self) -> None:
-        """Send a message through the Gemini pipeline."""
-        prompt = self.command_input.text().strip() if hasattr(self, "command_input") else ""
-        if not prompt:
-            self.append_console("Please enter a message.")
-            if hasattr(self, "command_input"):
-                self.command_input.setFocus()
-            return
+    def _on_select_project(self, project: dict) -> None:
+        """Select a project to set active working context."""
+        name = project.get("name", "Unknown")
+        notes = project.get("notes", "")
+        self.command_input.setText(f"Stark, let's work on '{name}'. Context: {notes}")
+        self.command_input.setFocus()
+        self.append_system_message(f"Selected project: [{name}]. Context ready.")
 
-        if self.gemini_request_in_flight:
-            self.append_console("MR. STARK is already processing a request.")
-            return
-
-        self.append_console(f"You: {prompt}")
-        self.command_input.clear()
-        self.command_input.setEnabled(False)
-
-        if self.gemini_client is None:
-            self.append_console("Gemini configuration missing. Add GEMINI_API_KEY to .env file.")
-            self.command_input.setEnabled(True)
-            self.command_input.setFocus()
-            return
-
-        self.gemini_request_in_flight = True
-        try:
-            self.conversation_history.append({"role": "user", "parts": [{"text": prompt}]})
-            recent_history = self.conversation_history[-self._max_history_messages:]
-
-            request_config = genai.types.GenerateContentConfig(
-                system_instruction=self.stark_voice.system_instructions(current_datetime=datetime.now()),
-            )
-
-            response = self.gemini_client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=recent_history,
-                config=request_config,
-            )
-
-            answer = response.text
-            if not answer:
-                answer = "No response received from Gemini."
-
-            self.conversation_history.append({"role": "model", "parts": [{"text": answer}]})
-            self.conversation_history = self.conversation_history[-(self._max_history_messages * 2):]
-
-            self.append_console(f"MR. STARK: {answer}")
-            self.speak_response(answer)
-        except APIError as exc:
-            self.append_console(f"Gemini API error: {exc}")
-        except Exception as exc:
-            self.append_console(f"Unable to contact Gemini API: {exc}")
-        finally:
-            self.gemini_request_in_flight = False
-            self.command_input.setEnabled(True)
-            self.command_input.setFocus()
+    def set_mode(self, mode: str) -> None:
+        """Retained for backward compatibility with external scripts."""
+        self.ui_mode = mode
 
     def handle_action(self, name: str) -> None:
-        """Handle action button clicks."""
-        if name == "Run Scan":
-            message = "System scan initiated...\n\nAll core systems checked and operational."
-            QMessageBox.information(self, "MR. STARK", message)
-            self.append_console("[Action] System scan completed. All systems nominal.")
-        elif name == "Open Console":
-            self.set_mode("text")
-            self.append_console("[Action] Console opened. Ready for input.")
-            if hasattr(self, "command_input"):
-                self.command_input.setFocus()
-        elif name == "Guard Review":
-            message = "Guard review complete. Security posture within policy."
-            QMessageBox.information(self, "MR. STARK", message)
-            self.append_console("[Action] Guard review complete. Security status: ALLOWED.")
-        else:
-            self.append_console(f"[Action] {name}")
+        """Retained for backward compatibility."""
+        self.append_system_message(f"System Diagnostic: '{name}' check nominal.")
 
     def on_activate(self) -> None:
-        """Handle core activation button."""
-        QMessageBox.information(self, "MR. STARK", "Core systems are online and ready for operation.")
-        self.append_console("[Core] All systems activated and operational.")
+        self.append_system_message("Core arc reactor running at optimal resonance.")
 
     def _on_nav_home(self) -> None:
-        """Navigate to home."""
-        self.set_mode("voice")
-        self.append_console("[Navigation] Home selected.")
+        self.command_input.setFocus()
 
     def _on_nav_projects(self) -> None:
-        """Navigate to projects."""
-        self.append_console("[Navigation] Projects page (demo).")
+        self.append_system_message("Project Vault loaded: Check sidebar for active modules.")
 
     def _on_nav_tools(self) -> None:
-        """Navigate to tools."""
-        self.append_console("[Navigation] Tools page (demo).")
+        self.append_system_message("Engineering Tools active: Use quick action chips above input.")
 
     def _on_nav_memory(self) -> None:
-        """Navigate to memory."""
-        self.append_console("[Navigation] Memory page (demo).")
+        count = len(self.vault.get_recent_messages(limit=100))
+        self.append_system_message(f"Memory Vault: {count} messages indexed in stark_vault.db.")
 
     def _on_nav_settings(self) -> None:
-        """Navigate to settings."""
-        self.append_console("[Navigation] Settings page (demo).")
+        self.append_system_message(f"Active Tone: [{self.stark_voice.get_tone().upper()}]. Voice: [{'ON' if self.voice_enabled else 'OFF'}].")
 
 
-def render_startup_animation() -> None:
-    """Render the startup splash screen and main window."""
+def render_startup_animation() -> StarkMainWindow:
+    """Render startup splash screen and main command centre."""
     app = QApplication.instance() or QApplication([])
     splash = StartupSplash()
     splash.show()
@@ -1295,7 +1470,7 @@ def render_startup_animation() -> None:
         (app.primaryScreen().availableGeometry().height() - splash.height()) // 2,
     )
     app.processEvents()
-    time.sleep(1.3)
+    time.sleep(1.2)
     window = StarkMainWindow()
     window.show()
     splash.close()
@@ -1307,3 +1482,4 @@ if __name__ == "__main__":
     window = StarkMainWindow()
     window.show()
     app.exec()
+
